@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-SAP Planning Guidelines MCP Server — ChromaDB Edition
-- Wissensdatenbank für SAP-Planungsthemen: SAC Planning, IBP, BPC, S/4HANA PP/FI-Planung
+SAP SAC Planning Guidelines MCP Server — ChromaDB Edition
+- Wissensdatenbank für SAP Analytics Cloud Planning
 - Local sentence-transformers embeddings (vollständig offline)
 - Hybrid search: semantisch (ChromaDB) + keyword (BM25-style)
 - Auto-Chunking mit Overlap
 - Re-Index-Erkennung via MD5-Checksum
-- RAG-angereicherte Code-/Konfigurations-Snippets für SAP Planning
+- RAG-angereicherte SAC Planning Snippets
 """
 
 import json
-import os
 import re
 import hashlib
 import shutil
@@ -43,9 +42,7 @@ def _get_embedding_fn():
     global _embed_fn
     if _embed_fn is None:
         from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-        _embed_fn = SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
-        )
+        _embed_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
     return _embed_fn
 
 def _get_collection():
@@ -54,7 +51,7 @@ def _get_collection():
         import chromadb
         _chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         _collection = _chroma_client.get_or_create_collection(
-            name="sap_planning_guidelines",
+            name="sac_planning_guidelines",
             embedding_function=_get_embedding_fn(),
             metadata={"hnsw:space": "cosine"},
         )
@@ -82,10 +79,10 @@ def chunk_text(text: str, doc_name: str) -> list[dict]:
         if len(chunk) < 80:
             continue
         chunks.append({
-            "id":        f"{doc_name}__chunk_{i}",
-            "text":      chunk,
-            "doc_name":  doc_name,
-            "chunk_idx": i,
+            "id":         f"{doc_name}__chunk_{i}",
+            "text":       chunk,
+            "doc_name":   doc_name,
+            "chunk_idx":  i,
             "start_char": start,
         })
         if end >= len(text):
@@ -187,8 +184,8 @@ def hybrid_search(query: str, n_results: int = 5, doc_filter: Optional[str] = No
         res["ids"][0], res["documents"][0],
         res["metadatas"][0], res["distances"][0]
     ):
-        sem_score  = 1.0 - float(dist)
-        kw_score   = keyword_score(text, query)
+        sem_score   = 1.0 - float(dist)
+        kw_score    = keyword_score(text, query)
         final_score = 0.70 * sem_score + 0.30 * min(kw_score / 5.0, 1.0)
         combined.append({
             "id":        doc_id,
@@ -228,7 +225,7 @@ SAC_TEMPLATES = {
         MEMBERSET [d/Version] = ("Actual")
         MEMBERSET [d/Category] = ("Forecast")
 
-        // Quell-Daten lesen
+        // Quell-Daten in Plan-Version schreiben
         DATA([d/Version] = "Actual") -> [d/Version] = "Plan"
 
         // Optional: Faktor anwenden
@@ -282,7 +279,7 @@ SAC_TEMPLATES = {
 
     "planning_sequence": textwrap.dedent("""\
         // SAC Planning: Planning Sequence — mehrere Data Actions verketten
-        // Reihenfolge:
+        // Empfohlene Reihenfolge:
         //   1. Daten vorbereiten / cleanen
         //   2. Verteilung / Allocation
         //   3. Währungsumrechnung
@@ -297,245 +294,7 @@ SAC_TEMPLATES = {
         """),
 }
 
-# ─── IBP Templates ─────────────────────────────────────────────────────────────
-
-IBP_TEMPLATES = {
-    "key_figure_calculation": textwrap.dedent("""\
-        /* SAP IBP: Schlüsselzahl-Berechnung (Calculated Key Figure)
-           Pfad: Master Data → Key Figures → Calculated */
-
-        -- Beispiel: Forecast Accuracy (FA)
-        -- FA = 1 - ABS(Statistical Forecast - Consensus Demand) / Consensus Demand
-
-        CASE
-          WHEN [CONSENSUSDEMANDQTY] = 0 THEN NULL
-          ELSE 1 - ABS([STATISTICALFORECASTQTY] - [CONSENSUSDEMANDQTY])
-                   / [CONSENSUSDEMANDQTY]
-        END
-        """),
-
-    "supply_heuristic": textwrap.dedent("""\
-        /* SAP IBP: Supply Heuristic — Konfigurationsmuster
-           Pfad: Supply Planning → Heuristic Run */
-
-        -- Planungsparameter (Beispielwerte):
-        -- Planungshorizont:       12 Monate
-        -- Zeitbucket:             Woche
-        -- Sicherheitsbestand:     2 Wochen Coverage
-        -- Lieferzeit (Lead Time): 4 Wochen
-        -- Losgrößenverfahren:     Lot-for-Lot
-
-        -- Empfohlene Reihenfolge:
-        --   1. Demand Planning (stat. Forecast + Konsensus)
-        --   2. Inventory Optimization (Safety Stock)
-        --   3. Supply Heuristic / Optimization
-        --   4. Deployment & Transportation Load Building
-        """),
-
-    "alert_definition": textwrap.dedent("""\
-        /* SAP IBP: Alert-Definition — Ausnahmeüberwachung
-           Pfad: Alert Management → Alert Types */
-
-        -- Beispiel: Unterdeckungsalert
-        -- Bedingung: Projected Stock < Safety Stock
-
-        ALERT TYPE: "Stock Shortage Risk"
-          CONDITION:  [PROJECTEDSTOCKQTY] < [SAFETYSTOCKQTY]
-          SEVERITY:   High
-          NOTIFY:     Supply Planner, Demand Planner
-          THRESHOLD:  10 %  -- nur auslösen wenn Abweichung > 10 %
-          HORIZON:    8 Wochen
-        """),
-
-    "macros_excel": textwrap.dedent("""\
-        ' SAP IBP Excel Add-In: VBA-Makro für automatischen Refresh
-        ' Voraussetzung: SAP IBP Excel Add-In installiert
-
-        Sub RefreshIBPData()
-            Dim oIBP As Object
-            On Error GoTo ErrHandler
-
-            ' IBP Add-In Objekt referenzieren
-            Set oIBP = Application.COMAddIns("SAPBPCExcelClient.Connect").Object
-
-            ' Daten aktualisieren
-            oIBP.Refresh
-
-            MsgBox "IBP-Daten erfolgreich aktualisiert.", vbInformation
-            Exit Sub
-
-        ErrHandler:
-            MsgBox "Fehler beim Refresh: " & Err.Description, vbCritical
-        End Sub
-        """),
-}
-
-# ─── BPC Templates ─────────────────────────────────────────────────────────────
-
-BPC_TEMPLATES = {
-    "script_logic": textwrap.dedent("""\
-        *--- SAP BPC Script Logic: Top-Down-Verteilung ---*
-        *  Pfad: Administration → Rules → Script Logic
-
-        *XDIM_MEMBERSET CATEGORY = BAS(FORECAST)
-        *XDIM_MEMBERSET TIME = %TIME_SET%
-        *XDIM_MEMBERSET ACCOUNT = BAS(REVENUE)
-
-        *WHEN COSTCENTER
-          *IS "TOTAL"
-            *REC(EXPRESSION = %VALUE% / [COSTCENTER].[HEADCOUNT] \
-                              * [COSTCENTER].[TOTAL_HEADCOUNT], \
-                 COSTCENTER = %COSTCENTER_MEMBERS%)
-        *ENDWHEN
-        """),
-
-    "fox_formula": textwrap.dedent("""\
-        *--- SAP BPC Fox Formula: Wachstumsrate anwenden ---*
-
-        DATA lv_growth TYPE f.
-        lv_growth = 0.05.  " 5 % Wachstum
-
-        *FOR %ENTITY% = BAS(COMPANY)
-          *REC(FACTOR = 1 + lv_growth, \
-               CATEGORY = "BUDGET", \
-               TIME = %NEXT_YEAR%)
-        *NEXT
-        """),
-
-    "validation_rule": textwrap.dedent("""\
-        *--- SAP BPC Validierungsregel ---*
-        *  Sicherstellen dass Summe der Kostenstellen = Gesamtkosten
-
-        *VALIDATION
-          *XDIM_MEMBERSET ACCOUNT = "TOTAL_COSTS"
-          *FORMULA
-            [COSTCENTER].[ALL_COSTCENTERS_SUM] = [COSTCENTER].[TOTAL]
-          *MESSAGE "Kostenstellensumme stimmt nicht mit Gesamtkosten überein"
-        *END_VALIDATION
-        """),
-
-    "etl_transformation": textwrap.dedent("""\
-        *--- SAP BPC Data Manager: Transformation-Datei (*.xls) ---*
-        *  Spalten: EXTERNAL_FIELD → BPC_DIMENSION
-
-        *OPTIONS
-          FORMAT = DELIMITED
-          DELIMITER = ;
-          HEADER = YES
-          SKIPROWS = 0
-
-        *MAPPING
-          BUKRS    → ENTITY
-          GJAHR    → TIME      (TRANSFORM: "20" & LEFT(%VALUE%,2) & "." & RIGHT(%VALUE%,2))
-          KSTAR    → ACCOUNT
-          WKGBTR   → SIGNEDDATA
-          KOKRS    → COSTCENTER
-        """),
-}
-
-# ─── S/4HANA Planning Templates ───────────────────────────────────────────────
-
-S4_TEMPLATES = {
-    "mrp_configuration": textwrap.dedent("""\
-        *--- S/4HANA MRP: Planungsparameter (MRP-Sicht im Materialstamm) ---*
-
-        * Transaktion: MM02 → Dispositionsansichten
-
-        * MRP-Verfahren:        PD  (Plangesteuerte Disposition)
-        * Losgrößenverfahren:   EX  (Exakte Losgröße / Lot-for-Lot)
-        * Bestellpolitik:       V   (Verbrauchsgesteuert) ODER P (Plangesteuert)
-        * Planungszeitraum:     90 Tage
-        * Sicherheitsbestand:   100 Stück (statisch) ODER dynamisch via Safety Stock Planning
-        * Meldebestand:         50 Stück
-        * Wiederbeschaffungszeit: 14 Tage
-
-        * ABAP: MRP-Lauf per BAdI erweitern
-        INTERFACE if_ex_md_change_mrp_data
-          METHOD change_mrp_data.
-            " Planungsparameter dynamisch anpassen
-          ENDMETHOD.
-        ENDINTERFACE.
-        """),
-
-    "fi_planning_cds": textwrap.dedent("""\
-        -- S/4HANA FI-Planung: CDS View für Planungsberichte
-        -- Basis: Tabelle FAGLFLEXP (Planung Hauptbuch)
-
-        @AbapCatalog.sqlViewName: 'ZV_FI_PLAN'
-        @Analytics.dataCategory:  #CUBE
-        define view ZI_FI_PlanData
-          as select from faglflexp
-        {
-          key rbukrs    as CompanyCode,
-          key ryear     as FiscalYear,
-          key poper     as FiscalPeriod,
-          key racct     as GLAccount,
-          key rcntr     as CostCenter,
-              hsl       as AmountLC,
-              tsl       as AmountGC,
-              hwaer     as LocalCurrency,
-              versn     as PlanVersion
-        }
-        where rwtype = '0'   -- Planwerte
-          and rldnr  = '0L'  -- Hauptbuch-Ledger
-        """),
-
-    "pp_planned_order": textwrap.dedent("""\
-        * S/4HANA PP: Planauftrag per ABAP anlegen
-        * Transaktion MD11 / BAPI: BAPI_PLANNEDORDER_CREATE
-
-        DATA: ls_order  TYPE bapi_pp_planned_order,
-              ls_return TYPE bapiret2.
-
-        ls_order-material    = 'FG-1000'.
-        ls_order-plant       = '1000'.
-        ls_order-order_type  = 'LA'.           " LA = Planauftrag
-        ls_order-quantity    = '100'.
-        ls_order-basic_end   = '20241231'.
-        ls_order-order_start = '20241201'.
-
-        CALL FUNCTION 'BAPI_PLANNEDORDER_CREATE'
-          EXPORTING
-            planned_order = ls_order
-          IMPORTING
-            return        = ls_return.
-
-        IF ls_return-type = 'E'.
-          " Fehlerbehandlung
-        ELSE.
-          CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
-        ENDIF.
-        """),
-
-    "profit_center_planning": textwrap.dedent("""\
-        -- S/4HANA Profit-Center-Planung: SQL-Abfrage Ist vs. Plan
-        -- Quelle: ACDOCA (Ist) + FAGLFLEXP (Plan)
-
-        SELECT
-            a.prctr      AS ProfitCenter,
-            a.gjahr      AS FiscalYear,
-            a.poper      AS Period,
-            SUM(a.hsl)   AS Actual_LC,
-            p.plan_amt   AS Plan_LC,
-            SUM(a.hsl) - p.plan_amt AS Variance
-        FROM acdoca AS a
-        JOIN (
-            SELECT rcntr, ryear, poper, SUM(hsl) AS plan_amt
-            FROM faglflexp
-            WHERE versn = '001' AND rwtype = '0'
-            GROUP BY rcntr, ryear, poper
-        ) AS p
-          ON a.prctr = p.rcntr
-         AND a.gjahr = p.ryear
-         AND a.poper = p.poper
-        WHERE a.rbukrs = '1000'
-          AND a.gjahr  = '2024'
-        GROUP BY a.prctr, a.gjahr, a.poper, p.plan_amt
-        ORDER BY a.prctr, a.poper;
-        """),
-}
-
-# ─── Best-practice checks ──────────────────────────────────────────────────────
+# ─── Best-practice check ───────────────────────────────────────────────────────
 
 def check_sac_planning(config: str) -> tuple[list, list]:
     issues, tips = [], []
@@ -555,59 +314,9 @@ def check_sac_planning(config: str) -> tuple[list, list]:
         tips.append("Keine offensichtlichen Probleme gefunden.")
     return issues, tips
 
-def check_ibp_config(config: str) -> tuple[list, list]:
-    issues, tips = [], []
-    cu = config.upper()
-
-    if "SAFETY STOCK" not in cu and "SAFETYSTOCKQTY" not in cu:
-        tips.append("Sicherheitsbestand nicht referenziert — prüfe ob Safety Stock Planning aktiviert ist.")
-    if "LEAD TIME" not in cu and "LEADTIME" not in cu:
-        tips.append("Keine Lieferzeitangabe gefunden — stelle sicher, dass die Lead Time im Materialstamm gepflegt ist.")
-    if "ALERT" not in cu:
-        tips.append("Keine Alert-Logik erkannt — empfehle Ausnahmeüberwachung für Unter-/Überdeckungen zu aktivieren.")
-    if "HORIZON" not in cu and "HORIZONT" not in cu:
-        issues.append("Kein Planungshorizont definiert — IBP-Läufe ohne Horizont können Gesamtdaten verarbeiten.")
-    if not issues and not tips:
-        tips.append("Konfiguration sieht plausibel aus.")
-    return issues, tips
-
-def check_bpc_logic(code: str) -> tuple[list, list]:
-    issues, tips = [], []
-    cu = code.upper()
-
-    if "*XDIM_MEMBERSET" not in cu:
-        issues.append("Kein *XDIM_MEMBERSET gesetzt — Script Logic ohne Memberset verarbeitet alle Daten (Performance-Risiko).")
-    if "COMMIT" not in cu and "*REC" in cu:
-        tips.append("*REC ohne expliziten COMMIT — prüfe ob automatischer COMMIT nach Script ausgeführt wird.")
-    if "SIGNEDDATA" not in cu and "HSL" not in cu and "WKGBTR" not in cu:
-        tips.append("Kein Betragsfeld erkannt — stelle sicher das richtige Betragsfeld (SIGNEDDATA / HSL) zu verwenden.")
-    if "*WHEN" in cu and "*ENDWHEN" not in cu:
-        issues.append("*WHEN ohne *ENDWHEN — unvollständige Bedingungsstruktur.")
-    if not issues and not tips:
-        tips.append("Keine offensichtlichen Probleme in der Script Logic gefunden.")
-    return issues, tips
-
-def check_s4_planning(code: str) -> tuple[list, list]:
-    issues, tips = [], []
-    cu = code.upper()
-
-    if "BAPI_TRANSACTION_COMMIT" not in cu and ("BAPI_" in cu or "CALL FUNCTION" in cu):
-        issues.append("BAPI-Aufruf ohne BAPI_TRANSACTION_COMMIT — Daten werden nicht dauerhaft gespeichert.")
-    if "MRP" in cu and "PLANT" not in cu and "WERK" not in cu:
-        tips.append("MRP-Bezug ohne Werk (PLANT/WERKS) — MRP ist immer werksbezogen.")
-    if "FAGLFLEXP" in cu and "VERSN" not in cu:
-        tips.append("Zugriff auf FAGLFLEXP ohne Planversions-Filter (VERSN) — alle Planversionen werden gelesen.")
-    if "ACDOCA" in cu and "RBUKRS" not in cu:
-        issues.append("ACDOCA-Abfrage ohne Buchungskreis-Filter (RBUKRS) — mandantenübergreifende Daten können gelesen werden.")
-    if "SELECT *" in cu:
-        issues.append("SELECT * — explizite Feldliste angeben (Performance + Stabilität).")
-    if not issues and not tips:
-        tips.append("Keine offensichtlichen Probleme gefunden.")
-    return issues, tips
-
 # ─── Server ────────────────────────────────────────────────────────────────────
 
-app = Server("sap-planning-guidelines-v1")
+app = Server("sac-planning-guidelines-v1")
 
 @app.list_tools()
 async def list_tools():
@@ -634,7 +343,7 @@ async def list_tools():
              inputSchema={"type": "object", "properties": {}}),
 
         Tool(name="search_documents",
-             description="Hybride semantisch+keyword Suche über alle indizierten SAP-Planungsrichtlinien.",
+             description="Hybride semantisch+keyword Suche über alle indizierten SAC-Planungsrichtlinien.",
              inputSchema={"type": "object", "properties": {
                  "query":       {"type": "string"},
                  "max_results": {"type": "integer", "default": 5},
@@ -661,54 +370,11 @@ async def list_tools():
                  "context": {"type": "string", "description": "Beschreibe was der Code tun soll"},
              }, "required": ["snippet_type"]}),
 
-        Tool(name="ibp_snippet",
-             description=(
-                 "Generiert ein SAP IBP (Integrated Business Planning) Template, angereichert mit Richtlinienkontext (RAG). "
-                 "Typen: key_figure_calculation, supply_heuristic, alert_definition, macros_excel."
-             ),
-             inputSchema={"type": "object", "properties": {
-                 "snippet_type": {"type": "string",
-                                  "enum": ["key_figure_calculation", "supply_heuristic",
-                                           "alert_definition", "macros_excel"]},
-                 "context": {"type": "string", "description": "Beschreibe den Anwendungsfall"},
-             }, "required": ["snippet_type"]}),
-
-        Tool(name="bpc_snippet",
-             description=(
-                 "Generiert ein SAP BPC (Business Planning and Consolidation) Template, angereichert mit Richtlinienkontext (RAG). "
-                 "Typen: script_logic, fox_formula, validation_rule, etl_transformation."
-             ),
-             inputSchema={"type": "object", "properties": {
-                 "snippet_type": {"type": "string",
-                                  "enum": ["script_logic", "fox_formula",
-                                           "validation_rule", "etl_transformation"]},
-                 "context": {"type": "string", "description": "Beschreibe den Anwendungsfall"},
-             }, "required": ["snippet_type"]}),
-
-        Tool(name="s4_planning_snippet",
-             description=(
-                 "Generiert ein SAP S/4HANA Planungs-Template (PP/FI/CO), angereichert mit Richtlinienkontext (RAG). "
-                 "Typen: mrp_configuration, fi_planning_cds, pp_planned_order, profit_center_planning."
-             ),
-             inputSchema={"type": "object", "properties": {
-                 "snippet_type": {"type": "string",
-                                  "enum": ["mrp_configuration", "fi_planning_cds",
-                                           "pp_planned_order", "profit_center_planning"]},
-                 "context": {"type": "string", "description": "Beschreibe den Anwendungsfall"},
-             }, "required": ["snippet_type"]}),
-
         Tool(name="check_planning_config",
-             description=(
-                 "Prüft SAP-Planungskonfiguration oder -Code gegen Best Practices, "
-                 "angereichert mit indizierten Richtlinien. "
-                 "Bereiche: sac_planning, ibp, bpc, s4_planning."
-             ),
+             description="Prüft SAC Planning Data Actions oder Konfiguration gegen Best Practices, angereichert mit indizierten Richtlinien.",
              inputSchema={"type": "object", "properties": {
-                 "code":   {"type": "string", "description": "Zu prüfender Code oder Konfigurationstext"},
-                 "area":   {"type": "string",
-                            "enum": ["sac_planning", "ibp", "bpc", "s4_planning"],
-                            "description": "SAP-Planungsbereich"},
-             }, "required": ["code", "area"]}),
+                 "code": {"type": "string", "description": "Zu prüfender Code oder Konfigurationstext"},
+             }, "required": ["code"]}),
     ]
 
 
@@ -736,10 +402,10 @@ async def call_tool(name: str, arguments: dict):
         entry = index_document(dest, desc, index)
         return [TextContent(type="text", text=
             f"Indiziert: {dest.name}\n"
-            f"  Zeichen    : {entry['chars']:,}\n"
-            f"  Chunks     : {entry['chunks']:,} (Größe={CHUNK_SIZE}, Overlap={CHUNK_OVERLAP})\n"
+            f"  Zeichen     : {entry['chars']:,}\n"
+            f"  Chunks      : {entry['chunks']:,} (Größe={CHUNK_SIZE}, Overlap={CHUNK_OVERLAP})\n"
             f"  Beschreibung: {desc or '(keine)'}\n"
-            f"  PDF-Backend: {PDF_BACKEND or 'keins (nur Textdateien)'}")]
+            f"  PDF-Backend : {PDF_BACKEND or 'keins (nur Textdateien)'}")]
 
     # ── list_documents ─────────────────────────────────────────────────────────
     elif name == "list_documents":
@@ -802,7 +468,7 @@ async def call_tool(name: str, arguments: dict):
                 f"Suchfehler: {e}\nStelle sicher dass ChromaDB installiert und Dokumente indiziert sind.")]
         if not hits:
             return [TextContent(type="text", text=f"Keine Ergebnisse für: {q}")]
-        parts = [f"Hybride Suchergebnisse für '{q}' ({len(hits)} Treffer):\n"]
+        parts = [f"Suchergebnisse für '{q}' ({len(hits)} Treffer):\n"]
         for h in hits:
             parts.append(
                 f"[{h['doc_name']} | Chunk {h['chunk_idx']} | "
@@ -833,68 +499,20 @@ async def call_tool(name: str, arguments: dict):
         out = f"SAC Planning Template: {stype}\n\n```\n{tmpl}\n```"
         if ctx:
             out += f"\n\nKontext: {ctx}"
-        out += f"\n\n── Relevante Richtlinienabschnitte (RAG) ──\n\n{rag_ctx}" if rag_ctx else \
-               "\n\n(Noch keine Richtliniendokumente indiziert. Füge PDFs mit add_document hinzu.)"
-        return [TextContent(type="text", text=out)]
-
-    # ── ibp_snippet ────────────────────────────────────────────────────────────
-    elif name == "ibp_snippet":
-        stype = arguments["snippet_type"]
-        ctx   = arguments.get("context", "")
-        tmpl  = IBP_TEMPLATES.get(stype, "// Unbekannter Snippet-Typ")
-        rag_ctx = build_rag_context(f"SAP IBP {stype} {ctx}".strip(), n=4)
-        out = f"SAP IBP Template: {stype}\n\n```\n{tmpl}\n```"
-        if ctx:
-            out += f"\n\nKontext: {ctx}"
-        out += f"\n\n── Relevante Richtlinienabschnitte (RAG) ──\n\n{rag_ctx}" if rag_ctx else \
-               "\n\n(Noch keine Richtliniendokumente indiziert. Füge PDFs mit add_document hinzu.)"
-        return [TextContent(type="text", text=out)]
-
-    # ── bpc_snippet ────────────────────────────────────────────────────────────
-    elif name == "bpc_snippet":
-        stype = arguments["snippet_type"]
-        ctx   = arguments.get("context", "")
-        tmpl  = BPC_TEMPLATES.get(stype, "// Unbekannter Snippet-Typ")
-        rag_ctx = build_rag_context(f"SAP BPC {stype} {ctx}".strip(), n=4)
-        out = f"SAP BPC Template: {stype}\n\n```\n{tmpl}\n```"
-        if ctx:
-            out += f"\n\nKontext: {ctx}"
-        out += f"\n\n── Relevante Richtlinienabschnitte (RAG) ──\n\n{rag_ctx}" if rag_ctx else \
-               "\n\n(Noch keine Richtliniendokumente indiziert. Füge PDFs mit add_document hinzu.)"
-        return [TextContent(type="text", text=out)]
-
-    # ── s4_planning_snippet ────────────────────────────────────────────────────
-    elif name == "s4_planning_snippet":
-        stype = arguments["snippet_type"]
-        ctx   = arguments.get("context", "")
-        tmpl  = S4_TEMPLATES.get(stype, "// Unbekannter Snippet-Typ")
-        rag_ctx = build_rag_context(f"S/4HANA Planning {stype} {ctx}".strip(), n=4)
-        out = f"S/4HANA Planning Template: {stype}\n\n```\n{tmpl}\n```"
-        if ctx:
-            out += f"\n\nKontext: {ctx}"
-        out += f"\n\n── Relevante Richtlinienabschnitte (RAG) ──\n\n{rag_ctx}" if rag_ctx else \
-               "\n\n(Noch keine Richtliniendokumente indiziert. Füge PDFs mit add_document hinzu.)"
+        out += (f"\n\n── Relevante Richtlinienabschnitte (RAG) ──\n\n{rag_ctx}" if rag_ctx else
+                "\n\n(Noch keine Richtliniendokumente indiziert. Füge PDFs mit add_document hinzu.)")
         return [TextContent(type="text", text=out)]
 
     # ── check_planning_config ──────────────────────────────────────────────────
     elif name == "check_planning_config":
         code = arguments["code"]
-        area = arguments["area"]
+        issues, tips = check_sac_planning(code)
 
-        checker_map = {
-            "sac_planning": (check_sac_planning, "SAC Planning"),
-            "ibp":          (check_ibp_config,   "SAP IBP"),
-            "bpc":          (check_bpc_logic,    "SAP BPC"),
-            "s4_planning":  (check_s4_planning,  "S/4HANA Planning"),
-        }
-        checker_fn, area_label = checker_map[area]
-        issues, tips = checker_fn(code)
-
-        rag_query = f"SAP {area_label} best practices " + " ".join(
+        rag_query = "SAC Planning best practices " + " ".join(
             re.findall(r'\b[A-Z_][A-Z_0-9]{2,}\b', code)[:8])
         rag_ctx = build_rag_context(rag_query, n=3)
 
-        parts = [f"Code-Review ({area_label})\n"]
+        parts = ["Code-Review (SAC Planning)\n"]
         if issues:
             parts.append("Probleme:\n" + "\n".join(f"  ⚠  {i}" for i in issues))
         if tips:
