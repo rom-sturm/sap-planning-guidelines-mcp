@@ -1,0 +1,35 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# ChromaDB vector store (wird lokal neu aufgebaut)
+chroma_store/
+
+# Dokument-Cache-Dateien
+documents/*.cache.txt
+
+# Index (wird beim ersten Start automatisch erstellt)
+doc_index.json
+
+# Eigene Planungsdokumente (nicht Teil des Repos)
+documents/*.pdf
+documents/*.txt
+documents/*.md
+
+# Lokal gecachtes Embedding-Modell
+models/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
